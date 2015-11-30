@@ -18,7 +18,9 @@ Param(
 
     [String]$Source = "https://www.nuget.org/api/v2/",
 
-    [String]$OutputDirectory = (Get-Location))
+    [String]$OutputDirectory = (Get-Location),
+    
+    [switch]$NoCache)
 
 $ErrorActionPreference = "stop"
 
@@ -31,7 +33,16 @@ else {
     $outputDir = Get-Item $OutputDirectory
 }
 
-$serviceUrls = $Source.Split(';') | Select -Property @{ Name = "Url"; Expression = { New-Object Uri -ArgumentList $_ } } | Select -ExpandProperty Url
+$services = New-Object System.Collections.Generic.HashSet[object]
+
+$Source.Split(';') | Foreach {
+    if ($_.StartsWith("http")) {
+        [void]$services.Add((New-Object Uri -ArgumentList $_))
+    }
+    else {
+        [void]$services.Add((Get-Item $_))
+    }
+}
 
 function ExtractPackage($stream, $packageId, $version) {
     $directory = New-Item (Join-Path $outputDir "$packageId.$version") -ItemType directory
@@ -92,17 +103,16 @@ function GetSpec($nupkg) {
 }
 
 function RestorePackage($packageId, $version) {
-    $packageLocation = Join-Path $outputDir "$packageId.$version"
-    if (Test-Path $packageLocation) {
-        $spec = GetSpec((Join-Path $packageLocation "$packageId.$version.nupkg"))
+    $directory = Join-Path $outputDir "$packageId.$version"
+    $cachePath = Join-Path $env:LOCALAPPDATA "NuGet\Cache"
+    $cachePackagePath = Join-Path $cachePath "$packageId.$version.nupkg"
+
+    if (Test-Path $directory) {
+        $spec = GetSpec((Join-Path $directory "$packageId.$version.nupkg"))
         
         Write-Host $packageId $version already installed
     }
-    else {
-        $cachePath = Join-Path $env:LOCALAPPDATA "NuGet\Cache"
-        $cachePackagePath = Join-Path $cachePath "$packageId.$version.nupkg"
-
-        if (Test-Path $cachePackagePath) {
+    elseif ((-not $NoCache) -and (Test-Path $cachePackagePath)) {
             $stream =  [System.IO.File]::OpenRead($cachePackagePath)
 
             $spec = ExtractPackage -stream $stream -packageId $packageId -version $version
@@ -110,43 +120,64 @@ function RestorePackage($packageId, $version) {
             $stream.Close()
             
             Write-Host Successfully installed $packageId $version from cache
-        }
-        else {
-            $packageUrl = $null
+    }
+    else {
+        $packageLocation = $null
 
-            foreach ($serviceUrl in $serviceUrls) {
-                try {        
-                    $packageResponce = Invoke-RestMethod (New-Object Uri -ArgumentList @( $serviceUrl, "Packages(Id='$packageId',Version='$version')" ))
-                    $packageUrl = $packageResponce.entry.content.src
+        foreach ($service in $services) {
+            
+            if ($service -is [Uri]) {
+                try {
+                    $packageResponce = Invoke-RestMethod (New-Object Uri -ArgumentList @( $service, "Packages(Id='$packageId',Version='$version')" ))
                 }
                 catch {
                     continue
                 }
+
+                $packageLocation = $packageResponce.entry.content.src
+                break
             }
-
-            if ($packageUrl -eq $null) {
-                Write-Error -Message "Unable to find version $version of package $packageId"
+            else {
+                $tmp = Join-Path $service "$packageId.$version.nupkg"
+                if (Test-Path $tmp) {
+                    $packageLocation = $tmp
+                    break
+                }
             }
+        }
 
-            $packageContent = Invoke-WebRequest $packageUrl
+        if ($packageLocation -eq $null) {
+            Write-Error -Message "Unable to find version $version of package $packageId"
+        }
 
+        if ($packageLocation -is [string] -and $packageLocation.StartsWith("http")) {
+            $packageContent = (Invoke-WebRequest $packageLocation).Content
+        }
+        elseif ($packageLocation -is [string]) {
+            $packageContent = [System.IO.File]::ReadAllBytes($packageLocation)
+        }
+        else {
+            Write-Error -Message "Unable to retrieve the package"
+        }
+
+        if ((-not $NoCache)) {
             if (!(Test-Path $cachePath)) {
                 New-Item $cachePath -ItemType directory | Out-Null
             }
 
-            [System.IO.File]::WriteAllBytes($cachePackagePath, $packageContent.Content)
-
-            try {
-                $stream = New-Object System.IO.MemoryStream -ArgumentList @(,($packageContent.Content))
-
-                $spec = ExtractPackage -stream $stream -packageId $packageId -version $version
-            }
-            finally {
-                $stream.Close()
-            }
-            
-            Write-Host Successfully installed $packageId $version from source
+            [System.IO.File]::WriteAllBytes($cachePackagePath, $packageContent)
         }
+
+        try {
+            $stream = New-Object System.IO.MemoryStream -ArgumentList @(, $packageContent)
+
+            $spec = ExtractPackage -stream $stream -packageId $packageId -version $version
+        }
+        finally {
+            $stream.Close()
+        }
+            
+        Write-Host Successfully installed $packageId $version from source
     }
 
     return $spec
