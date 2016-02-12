@@ -1,10 +1,18 @@
 ﻿<#
 .SYNOPSIS
-
+    Retores NuGet package
 .DESCRIPTION
-
-.NOTES
-
+    The script allows to restore the specific version of NuGet package and dependences. Currently only strongly typed version are supported.
+.PARAMETER PackageId
+    A specific package id to restore
+.PARAMETER Version
+    A specific version of the package to restore
+.PARAMETER Source
+    Comma separeted list of sources
+.PARAMETER OutputDirectory
+    Destination location of the restored packages
+.PARAMETER NoCache
+    Indicates that no cache should be used
 #>
 
 Param(
@@ -21,8 +29,6 @@ Param(
     [String]$OutputDirectory = (Get-Location),
     
     [switch]$NoCache)
-
-$ErrorActionPreference = "stop"
 
 Add-Type -Assembly "WindowsBase"
 
@@ -147,17 +153,17 @@ function RestorePackage($packageId, $version) {
         }
 
         if ($packageLocation -eq $null) {
-            Write-Error -Message "Unable to find version $version of package $packageId"
+            throw "Unable to find version $version of package $packageId"
         }
 
         if ($packageLocation -is [string] -and $packageLocation.StartsWith("http")) {
-            $packageContent = (Invoke-WebRequest $packageLocation).Content
+            $packageContent = (New-Object Net.WebClient).DownloadData($packageLocation)
         }
         elseif ($packageLocation -is [string]) {
             $packageContent = [System.IO.File]::ReadAllBytes($packageLocation)
         }
         else {
-            Write-Error -Message "Unable to retrieve the package"
+            throw "Unable to retrieve the package"
         }
 
         if ((-not $NoCache)) {
@@ -215,15 +221,17 @@ while ($requiredPackages.Count -gt 0) {
     }
 }
 
-$result = @{}
+$result = @()
 
 foreach ($packageId in $installedPackages.Keys) {
     $version = $installedPackages[$packageId]
-    $result.Add($packageId, @{ 
-        Id = $packageId;
-        Version = $version;
-        Location = Join-Path $outputDir "$packageId.$version"
-    })
+
+    $pkg = New-Object System.Object
+    $pkg | Add-Member -MemberType NoteProperty -Name "Id" -Value $packageId
+    $pkg | Add-Member -MemberType NoteProperty -Name "Version" -Value $version
+    $pkg | Add-Member -MemberType NoteProperty -Name "Location" -Value (Join-Path $outputDir "$packageId.$version")
+
+    $result += $pkg
 }
 
-return $result
+$result
