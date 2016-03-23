@@ -46,11 +46,11 @@
 Param(
     [Parameter(Mandatory=$True)]
     [ValidateNotNull()]
-    [String]$Id,
+    [String]$Id = $(throw "Package Id is not provided"),
 
     [Parameter(Mandatory=$True)]
     [ValidateNotNull()]
-    [String]$Version,
+    [String]$Version = $(throw "Package Version is not provided"),
 
     [String]$Source = "https://www.nuget.org/api/v2/",
 
