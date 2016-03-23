@@ -1,8 +1,36 @@
-﻿<#
+﻿<#PSScriptInfo
+.VERSION
+    0.1.3
+.GUID
+    9925e87b-552a-45c0-89e9-73673dd588af
+.AUTHOR 
+    Slava Sharashkin
+.COMPANYNAME 
+
+.COPYRIGHT 
+
+.TAGS
+    NuGet
+.LICENSEURI 
+    https://raw.githubusercontent.com/slavashar/Restore-NuGet/master/LICENSE
+.PROJECTURI
+    https://github.com/slavashar/Restore-NuGet
+.ICONURI 
+
+.EXTERNALMODULEDEPENDENCIES 
+
+.REQUIREDSCRIPTS 
+
+.EXTERNALSCRIPTDEPENDENCIES 
+
+.RELEASENOTES
+#>
+
+<#
 .SYNOPSIS
     Retores NuGet package
 .DESCRIPTION
-    The script allows to restore the specific version of NuGet package and dependences. Currently only strongly typed version are supported.
+    The script restores specific version of a NuGet package and dependences. Currently only strongly typed version are supported.
 .PARAMETER PackageId
     A specific package id to restore
 .PARAMETER Version
@@ -18,7 +46,7 @@
 Param(
     [Parameter(Mandatory=$True)]
     [ValidateNotNull()]
-    [String]$PackageId,
+    [String]$Id,
 
     [Parameter(Mandatory=$True)]
     [ValidateNotNull()]
@@ -50,8 +78,8 @@ $Source.Split(';') | Foreach {
     }
 }
 
-function ExtractPackage($stream, $packageId, $version) {
-    $directory = New-Item (Join-Path $outputDir "$packageId.$version") -ItemType directory
+function ExtractPackage($stream, $packageId, $packageVersion) {
+    $directory = New-Item (Join-Path $outputDir "$packageId.$packageVersion") -ItemType directory
         
     $nupkgStartPosition = $stream.Position;
     $archive = [System.IO.Packaging.Package]::Open($stream)
@@ -84,7 +112,7 @@ function ExtractPackage($stream, $packageId, $version) {
 
     [void]$stream.Seek($nupkgStartPosition, [System.IO.SeekOrigin]::Begin);
 
-    $partPath = Join-Path $directory "$packageId.$version.nupkg"
+    $partPath = Join-Path $directory "$packageId.$packageVersion.nupkg"
 
     $file = New-Item $partPath -ItemType file -Force
     $writer = $file.OpenWrite()
@@ -108,24 +136,24 @@ function GetSpec($nupkg) {
     return $spec
 }
 
-function RestorePackage($packageId, $version) {
-    $directory = Join-Path $outputDir "$packageId.$version"
+function private:restorePackage($packageId, $packageVersion) {
+    $directory = Join-Path $outputDir "$packageId.$packageVersion"
     $cachePath = Join-Path $env:LOCALAPPDATA "NuGet\Cache"
-    $cachePackagePath = Join-Path $cachePath "$packageId.$version.nupkg"
+    $cachePackagePath = Join-Path $cachePath "$packageId.$packageVersion.nupkg"
 
     if (Test-Path $directory) {
-        $spec = GetSpec((Join-Path $directory "$packageId.$version.nupkg"))
+        $spec = GetSpec ((Join-Path $directory "$packageId.$packageVersion.nupkg"))
         
-        Write-Host $packageId $version already installed
+        Write-Host $packageId $packageVersion already installed
     }
     elseif ((-not $NoCache) -and (Test-Path $cachePackagePath)) {
             $stream =  [System.IO.File]::OpenRead($cachePackagePath)
 
-            $spec = ExtractPackage -stream $stream -packageId $packageId -version $version
+            $spec = ExtractPackage -stream $stream -packageId $packageId -packageVersion $packageVersion
 
             $stream.Close()
             
-            Write-Host Successfully installed $packageId $version from cache
+            Write-Host Successfully installed $packageId $packageVersion from cache
     }
     else {
         $packageLocation = $null
@@ -134,7 +162,7 @@ function RestorePackage($packageId, $version) {
             
             if ($service -is [Uri]) {
                 try {
-                    $packageResponce = Invoke-RestMethod (New-Object Uri -ArgumentList @( $service, "Packages(Id='$packageId',Version='$version')" ))
+                    $packageResponce = Invoke-RestMethod (New-Object Uri -ArgumentList @( $service, "Packages(Id='$packageId',Version='$packageVersion')" ))
                 }
                 catch {
                     continue
@@ -144,7 +172,7 @@ function RestorePackage($packageId, $version) {
                 break
             }
             else {
-                $tmp = Join-Path $service "$packageId.$version.nupkg"
+                $tmp = Join-Path $service "$packageId.$packageVersion.nupkg"
                 if (Test-Path $tmp) {
                     $packageLocation = $tmp
                     break
@@ -153,7 +181,7 @@ function RestorePackage($packageId, $version) {
         }
 
         if ($packageLocation -eq $null) {
-            throw "Unable to find version $version of package $packageId"
+            throw "Unable to find version $packageVersion of package $packageId"
         }
 
         if ($packageLocation -is [string] -and $packageLocation.StartsWith("http")) {
@@ -177,13 +205,13 @@ function RestorePackage($packageId, $version) {
         try {
             $stream = New-Object System.IO.MemoryStream -ArgumentList @(, $packageContent)
 
-            $spec = ExtractPackage -stream $stream -packageId $packageId -version $version
+            $spec = ExtractPackage -stream $stream -packageId $packageId -packageVersion $packageVersion
         }
         finally {
             $stream.Close()
         }
             
-        Write-Host Successfully installed $packageId $version from source
+        Write-Host Successfully installed $packageId $packageVersion from source
     }
 
     return $spec
@@ -192,18 +220,24 @@ function RestorePackage($packageId, $version) {
 $installedPackages = @{}
 $requiredPackages = @{}
 
-$requiredPackages.Add($PackageId, $Version)
+$requiredPackages.Add($Id, $Version)
 
 while ($requiredPackages.Count -gt 0) {
     $packageId = $requiredPackages.Keys | select -First 1
-    $version = $requiredPackages[$packageId]
+    $packageVersion = $requiredPackages[$packageId]
 
-    Write-Host Restoring $packageId $version
+    Write-Host Restoring $packageId $packageVersion
 
-    $spec = RestorePackage $packageId $version
+    $spec = restorePackage -packageId $packageId -packageVersion $packageVersion
 
     $requiredPackages.Remove($packageId)
-    $installedPackages.Add($packageId, $version)
+
+    $pkg = New-Object System.Object
+    $pkg | Add-Member -MemberType NoteProperty -Name "Id" -Value $packageId
+    $pkg | Add-Member -MemberType NoteProperty -Name "Version" -Value $packageVersion
+    $pkg | Add-Member -MemberType NoteProperty -Name "Location" -Value (Join-Path $outputDir "$packageId.$packageVersion")
+
+    $installedPackages.Add($packageId, $pkg)
 
     foreach ($dependency in ($spec.package.metadata.dependencies | foreach { $_.dependency })) {
         $dependencyPackageId = $dependency.id
@@ -221,17 +255,4 @@ while ($requiredPackages.Count -gt 0) {
     }
 }
 
-$result = @()
-
-foreach ($packageId in $installedPackages.Keys) {
-    $version = $installedPackages[$packageId]
-
-    $pkg = New-Object System.Object
-    $pkg | Add-Member -MemberType NoteProperty -Name "Id" -Value $packageId
-    $pkg | Add-Member -MemberType NoteProperty -Name "Version" -Value $version
-    $pkg | Add-Member -MemberType NoteProperty -Name "Location" -Value (Join-Path $outputDir "$packageId.$version")
-
-    $result += $pkg
-}
-
-$result
+return $installedPackages.Values
